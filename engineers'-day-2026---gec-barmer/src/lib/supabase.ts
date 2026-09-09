@@ -562,7 +562,42 @@ export const submitConclaveRegistration = async (
       .select('id')
       .single();
 
-    if (error) {
+   if (error) {
+      console.warn('Conclave full insert error:', error.message);
+
+      // Agar Supabase me attendee_type column nahi mila to bina uske safe insert karega
+      const isSchemaCacheError =
+        error.code === 'PGRST204' ||
+        error.message?.includes('column') ||
+        error.message?.includes('schema cache') ||
+        error.message?.includes('attendee_type');
+
+      if (isSchemaCacheError) {
+        const fallbackRow: Record<string, any> = {
+          full_name: payload.full_name,
+          mobile_number: payload.mobile_number,
+        };
+        if (payload.branch) fallbackRow.branch = payload.branch;
+        if (payload.semester) fallbackRow.semester = payload.semester;
+
+        let questionText = payload.guest_question || '';
+        if (payload.attendee_type === 'guest') {
+          const guestTag = `[Guest - ${payload.guest_category || 'Dignitary'}: ${payload.designation || ''}, ${payload.company_name || ''}]`;
+          questionText = questionText ? `${guestTag} ${questionText}` : guestTag;
+        }
+        if (questionText) fallbackRow.guest_question = questionText;
+
+        const fallbackRes = await supabase
+          .from('conclave_registrations')
+          .insert([fallbackRow])
+          .select('id')
+          .single();
+
+        if (!fallbackRes.error) {
+          return { success: true, id: fallbackRes.data?.id };
+        }
+      }
+
       console.error('Conclave registration insert error:', error);
       return { success: false, error: error.message };
     }
