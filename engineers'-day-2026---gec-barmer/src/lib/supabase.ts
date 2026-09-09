@@ -410,6 +410,19 @@ CREATE TABLE IF NOT EXISTS public.blood_donation_registrations (
   created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
+-- 5. CONCLAVE GUEST REGISTRATIONS TABLE
+CREATE TABLE IF NOT EXISTS public.conclave_guest_registrations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  full_name TEXT NOT NULL,
+  mobile_number TEXT NOT NULL,
+  designation TEXT,
+  company_name TEXT,
+  guest_category TEXT,
+  guest_question TEXT,
+  photo_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
 -- Safe migrations if tables already exist:
 ALTER TABLE public.conclave_registrations ADD COLUMN IF NOT EXISTS attendee_type TEXT DEFAULT 'student';
 ALTER TABLE public.conclave_registrations ADD COLUMN IF NOT EXISTS photo_url TEXT;
@@ -423,6 +436,9 @@ ALTER TABLE public.plantation_registrations ADD COLUMN IF NOT EXISTS photo_url T
 ALTER TABLE public.blood_donation_registrations ADD COLUMN IF NOT EXISTS photo_url TEXT;
 ALTER TABLE public.project_show_registrations ADD COLUMN IF NOT EXISTS team_leader_photo_url TEXT;
 ALTER TABLE public.project_show_registrations ADD COLUMN IF NOT EXISTS project_photo_url TEXT;
+ALTER TABLE public.conclave_guest_registrations ADD COLUMN IF NOT EXISTS photo_url TEXT;
+ALTER TABLE public.conclave_guest_registrations ADD COLUMN IF NOT EXISTS guest_category TEXT;
+ALTER TABLE public.conclave_guest_registrations ADD COLUMN IF NOT EXISTS guest_question TEXT;
 
 -- Reload Supabase PostgREST schema cache immediately
 NOTIFY pgrst, 'reload schema';
@@ -432,31 +448,36 @@ NOTIFY pgrst, 'reload schema';
 -- Students can ONLY INSERT (submit). No public SELECT/UPDATE/DELETE.
 -- ===================================================================
 
--- Enable RLS on all 4 tables
+-- Enable RLS on all 5 tables
 ALTER TABLE public.conclave_registrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.conclave_guest_registrations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.plantation_registrations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.project_show_registrations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.blood_donation_registrations ENABLE ROW LEVEL SECURITY;
 
 -- Drop prior policies to avoid conflict
 DROP POLICY IF EXISTS "Allow public insert" ON public.conclave_registrations;
+DROP POLICY IF EXISTS "Allow public insert" ON public.conclave_guest_registrations;
 DROP POLICY IF EXISTS "Allow public insert" ON public.plantation_registrations;
 DROP POLICY IF EXISTS "Allow public insert" ON public.project_show_registrations;
 DROP POLICY IF EXISTS "Allow public insert" ON public.blood_donation_registrations;
 
 DROP POLICY IF EXISTS "Allow admin read" ON public.conclave_registrations;
+DROP POLICY IF EXISTS "Allow admin read" ON public.conclave_guest_registrations;
 DROP POLICY IF EXISTS "Allow admin read" ON public.plantation_registrations;
 DROP POLICY IF EXISTS "Allow admin read" ON public.project_show_registrations;
 DROP POLICY IF EXISTS "Allow admin read" ON public.blood_donation_registrations;
 
 -- INSERT Policies (Public: Anyone can submit registration)
 CREATE POLICY "Allow public insert" ON public.conclave_registrations FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow public insert" ON public.conclave_guest_registrations FOR INSERT WITH CHECK (true);
 CREATE POLICY "Allow public insert" ON public.plantation_registrations FOR INSERT WITH CHECK (true);
 CREATE POLICY "Allow public insert" ON public.project_show_registrations FOR INSERT WITH CHECK (true);
 CREATE POLICY "Allow public insert" ON public.blood_donation_registrations FOR INSERT WITH CHECK (true);
 
 -- Optional: Allow Admin Portal read access
 CREATE POLICY "Allow admin read" ON public.conclave_registrations FOR SELECT USING (true);
+CREATE POLICY "Allow admin read" ON public.conclave_guest_registrations FOR SELECT USING (true);
 CREATE POLICY "Allow admin read" ON public.plantation_registrations FOR SELECT USING (true);
 CREATE POLICY "Allow admin read" ON public.project_show_registrations FOR SELECT USING (true);
 CREATE POLICY "Allow admin read" ON public.blood_donation_registrations FOR SELECT USING (true);
@@ -549,17 +570,19 @@ export const submitConclaveRegistration = async (
     const isGuest = payload.attendee_type === 'guest';
 
     if (isGuest) {
-      // 1. Guest Registration -> conclave_guest_registrations
+      // 1. Guest Registration -> conclave_guest_registrations ONLY
       const guestRow: Record<string, any> = {
         full_name: payload.full_name,
         mobile_number: payload.mobile_number,
-        designation: payload.designation,
-        company_name: payload.company_name,
-        guest_category: payload.guest_category,
-        guest_question: payload.guest_question,
-        photo_url: payload.photo_url || '',
       };
 
+      if (payload.designation) guestRow.designation = payload.designation;
+      if (payload.company_name) guestRow.company_name = payload.company_name;
+      if (payload.guest_category) guestRow.guest_category = payload.guest_category;
+      if (payload.photo_url) guestRow.photo_url = payload.photo_url;
+      if (payload.guest_question) guestRow.guest_question = payload.guest_question;
+
+      // Attempt 1: Insert all guest fields
       const { data, error } = await supabase
         .from('conclave_guest_registrations')
         .insert([guestRow])
@@ -570,43 +593,54 @@ export const submitConclaveRegistration = async (
         return { success: true, id: data.id };
       }
 
-      console.warn('conclave_guest_registrations insert notice:', error?.message);
+      console.warn('conclave_guest_registrations insert attempt 1 notice:', error?.message);
 
-      // Fallback if photo_url is missing in conclave_guest_registrations
-      if (error?.message?.includes('photo_url') || error?.code === 'PGRST204') {
-        const fallbackGuest = { ...guestRow };
-        delete fallbackGuest.photo_url;
-        const retryRes = await supabase
-          .from('conclave_guest_registrations')
-          .insert([fallbackGuest])
-          .select('id')
-          .single();
+      // Attempt 2: If a column like photo_url or guest_question does not exist in schema cache
+      const essentialGuest: Record<string, any> = {
+        full_name: payload.full_name,
+        mobile_number: payload.mobile_number,
+      };
+      if (payload.designation) essentialGuest.designation = payload.designation;
+      if (payload.company_name) essentialGuest.company_name = payload.company_name;
+      if (payload.guest_category) essentialGuest.guest_category = payload.guest_category;
 
-        if (!retryRes.error) {
-          return { success: true, id: retryRes.data?.id };
-        }
-      }
-
-      // If conclave_guest_registrations table had an issue, fallback to conclave_registrations
-      const fallbackConclave = await supabase
-        .from('conclave_registrations')
-        .insert([
-          {
-            full_name: payload.full_name,
-            mobile_number: payload.mobile_number,
-            branch: payload.designation || 'Guest',
-            semester: payload.company_name || 'N/A',
-            guest_question: `[Guest: ${payload.guest_category || ''}] ${payload.guest_question || ''}`,
-          },
-        ])
+      const retry1 = await supabase
+        .from('conclave_guest_registrations')
+        .insert([essentialGuest])
         .select('id')
         .single();
 
-      if (!fallbackConclave.error) {
-        return { success: true, id: fallbackConclave.data?.id };
+      if (!retry1.error && retry1.data?.id) {
+        return { success: true, id: retry1.data.id };
       }
 
-      return { success: false, error: error?.message || fallbackConclave.error?.message };
+      console.warn('conclave_guest_registrations insert attempt 2 notice:', retry1.error?.message);
+
+      // Attempt 3: Bare columns (full_name, mobile_number, designation, company_name)
+      const bareGuest: Record<string, any> = {
+        full_name: payload.full_name,
+        mobile_number: payload.mobile_number,
+      };
+      if (payload.designation) bareGuest.designation = payload.designation;
+      if (payload.company_name) bareGuest.company_name = payload.company_name;
+
+      const retry2 = await supabase
+        .from('conclave_guest_registrations')
+        .insert([bareGuest])
+        .select('id')
+        .single();
+
+      if (!retry2.error && retry2.data?.id) {
+        return { success: true, id: retry2.data.id };
+      }
+
+      // If all attempts failed, report the exact error on conclave_guest_registrations table
+      const finalError = retry2.error?.message || retry1.error?.message || error?.message || 'Error saving to conclave_guest_registrations';
+      console.error('conclave_guest_registrations final error:', finalError);
+      return {
+        success: false,
+        error: `Guest table error (${finalError}). Make sure RLS policy allows INSERT on conclave_guest_registrations.`,
+      };
     } else {
       // 2. Student Registration -> conclave_registrations
       const studentRow: Record<string, any> = {
@@ -1105,4 +1139,3 @@ export const fetchAllActivityRegistrations = async () => {
 
   return results;
 };
-
