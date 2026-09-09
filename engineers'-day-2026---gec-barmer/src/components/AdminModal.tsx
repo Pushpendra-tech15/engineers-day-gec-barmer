@@ -100,6 +100,15 @@ export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose }) => {
   const loadAllData = async () => {
     setLoading(true);
     try {
+      try {
+        localStorage.removeItem('gec_conclave_registrations');
+        localStorage.removeItem('gec_plantation_registrations');
+        localStorage.removeItem('gec_project_show_registrations');
+        localStorage.removeItem('gec_blood_donation_registrations');
+      } catch (e) {
+        // ignore
+      }
+
       const data = await fetchAllActivityRegistrations();
       setConclaveData(data.conclave || []);
       setPlantationData(data.plantation || []);
