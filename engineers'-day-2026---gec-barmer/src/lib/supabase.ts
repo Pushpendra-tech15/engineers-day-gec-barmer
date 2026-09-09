@@ -424,6 +424,9 @@ ALTER TABLE public.blood_donation_registrations ADD COLUMN IF NOT EXISTS photo_u
 ALTER TABLE public.project_show_registrations ADD COLUMN IF NOT EXISTS team_leader_photo_url TEXT;
 ALTER TABLE public.project_show_registrations ADD COLUMN IF NOT EXISTS project_photo_url TEXT;
 
+-- Reload Supabase PostgREST schema cache immediately
+NOTIFY pgrst, 'reload schema';
+
 -- ===================================================================
 -- ROW LEVEL SECURITY (RLS) POLICIES
 -- Students can ONLY INSERT (submit). No public SELECT/UPDATE/DELETE.
@@ -546,7 +549,7 @@ export const submitConclaveRegistration = async (
     const isGuest = payload.attendee_type === 'guest';
 
     if (isGuest) {
-      // 1. Guest Registration -> conclave_guest_registrations टेबल में जाएगा
+      // 1. Guest Registration -> conclave_guest_registrations
       const guestRow: Record<string, any> = {
         full_name: payload.full_name,
         mobile_number: payload.mobile_number,
@@ -567,7 +570,9 @@ export const submitConclaveRegistration = async (
         return { success: true, id: data.id };
       }
 
-      // Fallback if photo_url is missing
+      console.warn('conclave_guest_registrations insert notice:', error?.message);
+
+      // Fallback if photo_url is missing in conclave_guest_registrations
       if (error?.message?.includes('photo_url') || error?.code === 'PGRST204') {
         const fallbackGuest = { ...guestRow };
         delete fallbackGuest.photo_url;
@@ -582,9 +587,28 @@ export const submitConclaveRegistration = async (
         }
       }
 
-      return { success: false, error: error?.message };
+      // If conclave_guest_registrations table had an issue, fallback to conclave_registrations
+      const fallbackConclave = await supabase
+        .from('conclave_registrations')
+        .insert([
+          {
+            full_name: payload.full_name,
+            mobile_number: payload.mobile_number,
+            branch: payload.designation || 'Guest',
+            semester: payload.company_name || 'N/A',
+            guest_question: `[Guest: ${payload.guest_category || ''}] ${payload.guest_question || ''}`,
+          },
+        ])
+        .select('id')
+        .single();
+
+      if (!fallbackConclave.error) {
+        return { success: true, id: fallbackConclave.data?.id };
+      }
+
+      return { success: false, error: error?.message || fallbackConclave.error?.message };
     } else {
-      // 2. Student Registration -> conclave_registrations टेबल में जाएगा
+      // 2. Student Registration -> conclave_registrations
       const studentRow: Record<string, any> = {
         full_name: payload.full_name,
         mobile_number: payload.mobile_number,
@@ -601,7 +625,9 @@ export const submitConclaveRegistration = async (
         .single();
 
       if (error) {
-        // Fallback without photo_url if column is missing
+        console.warn('conclave_registrations insert notice:', error.message);
+
+        // Fallback without photo_url if column is missing in schema cache
         const fallbackStudent = {
           full_name: payload.full_name,
           mobile_number: payload.mobile_number,
@@ -625,50 +651,6 @@ export const submitConclaveRegistration = async (
 
       return { success: true, id: data?.id };
     }
-      .select('id')
-      .single();
-
-   if (error) {
-      console.warn('Conclave full insert error:', error.message);
-
-      // Agar Supabase me attendee_type column nahi mila to bina uske safe insert karega
-      const isSchemaCacheError =
-        error.code === 'PGRST204' ||
-        error.message?.includes('column') ||
-        error.message?.includes('schema cache') ||
-        error.message?.includes('attendee_type');
-
-      if (isSchemaCacheError) {
-        const fallbackRow: Record<string, any> = {
-          full_name: payload.full_name,
-          mobile_number: payload.mobile_number,
-        };
-        if (payload.branch) fallbackRow.branch = payload.branch;
-        if (payload.semester) fallbackRow.semester = payload.semester;
-
-        let questionText = payload.guest_question || '';
-        if (payload.attendee_type === 'guest') {
-          const guestTag = `[Guest - ${payload.guest_category || 'Dignitary'}: ${payload.designation || ''}, ${payload.company_name || ''}]`;
-          questionText = questionText ? `${guestTag} ${questionText}` : guestTag;
-        }
-        if (questionText) fallbackRow.guest_question = questionText;
-
-        const fallbackRes = await supabase
-          .from('conclave_registrations')
-          .insert([fallbackRow])
-          .select('id')
-          .single();
-
-        if (!fallbackRes.error) {
-          return { success: true, id: fallbackRes.data?.id };
-        }
-      }
-
-      console.error('Conclave registration insert error:', error);
-      return { success: false, error: error.message };
-    }
-
-    return { success: true, id: data?.id };
   } catch (err: any) {
     console.error('Conclave registration exception:', err);
     return { success: false, error: err?.message || 'Network error occurred during submission' };
@@ -726,6 +708,30 @@ export const submitPlantationRegistration = async (
       .single();
 
     if (error) {
+      if (
+        error.code === 'PGRST204' ||
+        error.message?.includes('column') ||
+        error.message?.includes('schema cache') ||
+        error.message?.includes('photo_url')
+      ) {
+        const fallbackRes = await supabase
+          .from('plantation_registrations')
+          .insert([
+            {
+              full_name: payload.full_name,
+              mobile_number: payload.mobile_number,
+              branch: payload.branch,
+              semester: payload.semester,
+            },
+          ])
+          .select('id')
+          .single();
+
+        if (!fallbackRes.error) {
+          return { success: true, id: fallbackRes.data?.id };
+        }
+      }
+
       console.error('Plantation registration insert error:', error);
       return { success: false, error: error.message };
     }
@@ -812,6 +818,33 @@ export const submitProjectShowRegistration = async (
       .single();
 
     if (error) {
+      if (
+        error.code === 'PGRST204' ||
+        error.message?.includes('column') ||
+        error.message?.includes('schema cache')
+      ) {
+        const fallbackRow: Record<string, any> = {
+          project_title: payload.project_title,
+          project_category: payload.project_category,
+          team_leader_name: payload.team_leader_name,
+          team_leader_mobile: payload.team_leader_mobile,
+          branch: payload.branch,
+          team_member_count: payload.team_member_count,
+          team_members: payload.team_members,
+          project_description: payload.project_description,
+        };
+
+        const fallbackRes = await supabase
+          .from('project_show_registrations')
+          .insert([fallbackRow])
+          .select('id')
+          .single();
+
+        if (!fallbackRes.error) {
+          return { success: true, id: fallbackRes.data?.id, photoUrl: uploadedPhotoUrl };
+        }
+      }
+
       console.error('Project show insert error:', error);
       return { success: false, error: error.message };
     }
@@ -866,6 +899,33 @@ export const submitBloodDonationRegistration = async (
       .single();
 
     if (error) {
+      if (
+        error.code === 'PGRST204' ||
+        error.message?.includes('column') ||
+        error.message?.includes('schema cache') ||
+        error.message?.includes('photo_url')
+      ) {
+        const fallbackRow = {
+          full_name: payload.full_name,
+          mobile_number: payload.mobile_number,
+          branch: payload.branch,
+          semester: payload.semester,
+          gender: payload.gender,
+          age: payload.age,
+          blood_group: payload.blood_group,
+        };
+
+        const fallbackRes = await supabase
+          .from('blood_donation_registrations')
+          .insert([fallbackRow])
+          .select('id')
+          .single();
+
+        if (!fallbackRes.error) {
+          return { success: true, id: fallbackRes.data?.id };
+        }
+      }
+
       console.error('Blood donation insert error:', error);
       return { success: false, error: error.message };
     }
@@ -983,7 +1043,6 @@ export const fetchAllActivityRegistrations = async () => {
       if (cgRes.status === 'fulfilled' && cgRes.value.data) {
         cloudConclave = [...cloudConclave, ...cgRes.value.data.map((r: any) => ({ ...r, attendee_type: 'guest' }))];
       }
-      if (cRes.status === 'fulfilled' && cRes.value.data) cloudConclave = cRes.value.data;
       if (pRes.status === 'fulfilled' && pRes.value.data) cloudPlantation = pRes.value.data;
       if (psRes.status === 'fulfilled' && psRes.value.data) cloudProject = psRes.value.data;
       if (bRes.status === 'fulfilled' && bRes.value.data) cloudBlood = bRes.value.data;
