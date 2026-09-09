@@ -549,20 +549,19 @@ export const submitConclaveRegistration = async (
     created_at: new Date().toISOString(),
   };
 
-  // Save to localStorage backup
-  try {
-    const local = JSON.parse(localStorage.getItem('gec_conclave_registrations') || '[]');
-    local.push(payload);
-    localStorage.setItem('gec_conclave_registrations', JSON.stringify(local));
-  } catch (e) {
-    console.warn('LocalStorage backup error:', e);
-  }
-
+  // Save to localStorage backup ONLY if Supabase is not configured
   if (!supabase || !isSupabaseConfigured()) {
+    try {
+      const local = JSON.parse(localStorage.getItem('gec_conclave_registrations') || '[]');
+      local.push(payload);
+      localStorage.setItem('gec_conclave_registrations', JSON.stringify(local));
+    } catch (e) {
+      console.warn('LocalStorage backup error:', e);
+    }
     return {
       success: true,
       id: payload.id,
-      error: isSupabaseConfigured() ? undefined : 'Saved locally (Supabase not configured in .env)',
+      error: 'Saved locally (Supabase not configured in .env)',
     };
   }
 
@@ -709,20 +708,19 @@ export const submitPlantationRegistration = async (
     created_at: new Date().toISOString(),
   };
 
-  // Save to localStorage backup
-  try {
-    const local = JSON.parse(localStorage.getItem('gec_plantation_registrations') || '[]');
-    local.push(payload);
-    localStorage.setItem('gec_plantation_registrations', JSON.stringify(local));
-  } catch (e) {
-    console.warn('LocalStorage backup error:', e);
-  }
-
+  // Save to localStorage backup ONLY if Supabase is not configured
   if (!supabase || !isSupabaseConfigured()) {
+    try {
+      const local = JSON.parse(localStorage.getItem('gec_plantation_registrations') || '[]');
+      local.push(payload);
+      localStorage.setItem('gec_plantation_registrations', JSON.stringify(local));
+    } catch (e) {
+      console.warn('LocalStorage backup error:', e);
+    }
     return {
       success: true,
       id: payload.id,
-      error: isSupabaseConfigured() ? undefined : 'Saved locally (Supabase not configured in .env)',
+      error: 'Saved locally (Supabase not configured in .env)',
     };
   }
 
@@ -827,20 +825,19 @@ export const submitProjectShowRegistration = async (
     project_photo_url: uploadedPhotoUrl || input.projectPhotoUrl || '',
   };
 
-  // Save to localStorage backup
-  try {
-    const local = JSON.parse(localStorage.getItem('gec_project_show_registrations') || '[]');
-    local.push({ ...payload, registeredAt: new Date().toISOString() });
-    localStorage.setItem('gec_project_show_registrations', JSON.stringify(local));
-  } catch (e) {
-    console.warn('LocalStorage backup error:', e);
-  }
-
+  // Save to localStorage backup ONLY if Supabase is not configured
   if (!supabase || !isSupabaseConfigured()) {
+    try {
+      const local = JSON.parse(localStorage.getItem('gec_project_show_registrations') || '[]');
+      local.push({ ...payload, registeredAt: new Date().toISOString() });
+      localStorage.setItem('gec_project_show_registrations', JSON.stringify(local));
+    } catch (e) {
+      console.warn('LocalStorage backup error:', e);
+    }
     return {
       success: true,
       photoUrl: uploadedPhotoUrl,
-      error: isSupabaseConfigured() ? undefined : 'Saved locally (Supabase not configured in .env)',
+      error: 'Saved locally (Supabase not configured in .env)',
     };
   }
 
@@ -909,19 +906,18 @@ export const submitBloodDonationRegistration = async (
     photo_url: input.photoUrl || '',
   };
 
-  // Save to localStorage backup
-  try {
-    const local = JSON.parse(localStorage.getItem('gec_blood_donation_registrations') || '[]');
-    local.push({ ...payload, registeredAt: new Date().toISOString() });
-    localStorage.setItem('gec_blood_donation_registrations', JSON.stringify(local));
-  } catch (e) {
-    console.warn('LocalStorage backup error:', e);
-  }
-
+  // Save to localStorage backup ONLY if Supabase is not configured
   if (!supabase || !isSupabaseConfigured()) {
+    try {
+      const local = JSON.parse(localStorage.getItem('gec_blood_donation_registrations') || '[]');
+      local.push({ ...payload, registeredAt: new Date().toISOString() });
+      localStorage.setItem('gec_blood_donation_registrations', JSON.stringify(local));
+    } catch (e) {
+      console.warn('LocalStorage backup error:', e);
+    }
     return {
       success: true,
-      error: isSupabaseConfigured() ? undefined : 'Saved locally (Supabase not configured in .env)',
+      error: 'Saved locally (Supabase not configured in .env)',
     };
   }
 
@@ -1028,19 +1024,62 @@ const normalizeBloodDonationRow = (r: any, idx: number): BloodDonationRegistrati
 });
 
 /**
- * Fetch registrations for all 4 tables (for Admin Portal)
- * Safely merges cloud data and local backups so no registration is ever missed or malformed.
+ * Fetch registrations for all tables (for Admin Portal)
+ * When Supabase is configured, returns ONLY real live database rows and clears local cache.
+ * Falls back to localStorage ONLY if Supabase is unconfigured/offline.
  */
 export const fetchAllActivityRegistrations = async () => {
   const supabase = getSupabase();
-  const results = {
-    conclave: [] as ConclaveRegistrationRow[],
-    plantation: [] as PlantationRegistrationRow[],
-    projectShow: [] as ProjectShowRegistrationRow[],
-    bloodDonation: [] as BloodDonationRegistrationRow[],
-  };
 
-  // 1. Read local storage records
+  // If Supabase is connected and configured, fetch purely from cloud database
+  if (supabase && isSupabaseConfigured()) {
+    try {
+      const [cRes, cgRes, pRes, psRes, bRes] = await Promise.allSettled([
+        supabase.from('conclave_registrations').select('*').order('created_at', { ascending: false }),
+        supabase.from('conclave_guest_registrations').select('*').order('created_at', { ascending: false }),
+        supabase.from('plantation_registrations').select('*').order('created_at', { ascending: false }),
+        supabase.from('project_show_registrations').select('*').order('created_at', { ascending: false }),
+        supabase.from('blood_donation_registrations').select('*').order('created_at', { ascending: false }),
+      ]);
+
+      let cloudConclave: any[] = [];
+      let cloudPlantation: any[] = [];
+      let cloudProject: any[] = [];
+      let cloudBlood: any[] = [];
+
+      if (cRes.status === 'fulfilled' && cRes.value.data) {
+        cloudConclave = [...cloudConclave, ...cRes.value.data.map((r: any) => ({ ...r, attendee_type: 'student' }))];
+      }
+      if (cgRes.status === 'fulfilled' && cgRes.value.data) {
+        cloudConclave = [...cloudConclave, ...cgRes.value.data.map((r: any) => ({ ...r, attendee_type: 'guest' }))];
+      }
+      if (pRes.status === 'fulfilled' && pRes.value.data) cloudPlantation = pRes.value.data;
+      if (psRes.status === 'fulfilled' && psRes.value.data) cloudProject = psRes.value.data;
+      if (bRes.status === 'fulfilled' && bRes.value.data) cloudBlood = bRes.value.data;
+
+      // Clean up old local storage test records so deleted database records never ghost back
+      try {
+        localStorage.removeItem('gec_conclave_registrations');
+        localStorage.removeItem('gec_plantation_registrations');
+        localStorage.removeItem('gec_project_show_registrations');
+        localStorage.removeItem('gec_blood_donation_registrations');
+      } catch (e) {
+        // ignore
+      }
+
+      // Return ONLY live, real records from Supabase database
+      return {
+        conclave: cloudConclave.map(normalizeConclaveRow),
+        plantation: cloudPlantation.map(normalizePlantationRow),
+        projectShow: cloudProject.map(normalizeProjectShowRow),
+        bloodDonation: cloudBlood.map(normalizeBloodDonationRow),
+      };
+    } catch (err) {
+      console.warn('Error fetching cloud activity tables, falling back to local storage:', err);
+    }
+  }
+
+  // Fallback for offline / unconfigured mode
   let localConclave: any[] = [];
   let localPlantation: any[] = [];
   let localProject: any[] = [];
@@ -1055,87 +1094,11 @@ export const fetchAllActivityRegistrations = async () => {
     console.warn('Error reading local registrations:', e);
   }
 
-  // 2. Query cloud Supabase tables if connected
-  let cloudConclave: any[] = [];
-  let cloudPlantation: any[] = [];
-  let cloudProject: any[] = [];
-  let cloudBlood: any[] = [];
-
-  if (supabase && isSupabaseConfigured()) {
-    try {
-      const [cRes, cgRes, pRes, psRes, bRes] = await Promise.allSettled([
-        supabase.from('conclave_registrations').select('*').order('created_at', { ascending: false }),
-        supabase.from('conclave_guest_registrations').select('*').order('created_at', { ascending: false }),
-        supabase.from('plantation_registrations').select('*').order('created_at', { ascending: false }),
-        supabase.from('project_show_registrations').select('*').order('created_at', { ascending: false }),
-        supabase.from('blood_donation_registrations').select('*').order('created_at', { ascending: false }),
-      ]);
-
-      if (cRes.status === 'fulfilled' && cRes.value.data) {
-        cloudConclave = [...cloudConclave, ...cRes.value.data.map((r: any) => ({ ...r, attendee_type: 'student' }))];
-      }
-      if (cgRes.status === 'fulfilled' && cgRes.value.data) {
-        cloudConclave = [...cloudConclave, ...cgRes.value.data.map((r: any) => ({ ...r, attendee_type: 'guest' }))];
-      }
-      if (pRes.status === 'fulfilled' && pRes.value.data) cloudPlantation = pRes.value.data;
-      if (psRes.status === 'fulfilled' && psRes.value.data) cloudProject = psRes.value.data;
-      if (bRes.status === 'fulfilled' && bRes.value.data) cloudBlood = bRes.value.data;
-    } catch (err) {
-      console.warn('Error fetching cloud activity tables:', err);
-    }
-  }
-
-  // 3. Deduplicate & Merge (Cloud preferred, Local added if not in cloud)
-  const mergeRecords = (cloud: any[], local: any[], keyFn: (item: any) => string, normFn: (item: any, idx: number) => any) => {
-    const seen = new Set<string>();
-    const merged: any[] = [];
-
-    // Add cloud first
-    for (const item of cloud) {
-      const key = keyFn(item);
-      if (key) seen.add(key);
-      merged.push(normFn(item, merged.length));
-    }
-
-    // Add local if not duplicate
-    for (const item of local) {
-      const key = keyFn(item);
-      if (!key || !seen.has(key)) {
-        if (key) seen.add(key);
-        merged.push(normFn(item, merged.length));
-      }
-    }
-
-    return merged;
+  return {
+    conclave: localConclave.map(normalizeConclaveRow),
+    plantation: localPlantation.map(normalizePlantationRow),
+    projectShow: localProject.map(normalizeProjectShowRow),
+    bloodDonation: localBlood.map(normalizeBloodDonationRow),
   };
-
-  results.conclave = mergeRecords(
-    cloudConclave,
-    localConclave,
-    (r) => `${r.mobile_number || r.mobileNumber || ''}_${r.full_name || r.fullName || ''}`,
-    normalizeConclaveRow
-  );
-
-  results.plantation = mergeRecords(
-    cloudPlantation,
-    localPlantation,
-    (r) => `${r.mobile_number || r.mobileNumber || ''}_${r.full_name || r.fullName || ''}`,
-    normalizePlantationRow
-  );
-
-  results.projectShow = mergeRecords(
-    cloudProject,
-    localProject,
-    (r) => `${r.team_leader_mobile || r.teamLeaderMobile || ''}_${r.project_title || r.projectTitle || ''}`,
-    normalizeProjectShowRow
-  );
-
-  results.bloodDonation = mergeRecords(
-    cloudBlood,
-    localBlood,
-    (r) => `${r.mobile_number || r.mobileNumber || ''}_${r.full_name || r.fullName || ''}`,
-    normalizeBloodDonationRow
-  );
-
-  return results;
 };
+
