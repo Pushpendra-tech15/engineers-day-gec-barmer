@@ -1,0 +1,6 @@
+{
+  "name": "Engineers' Day 2026 - GEC Barmer",
+  "description": "Official website for Engineers' Day 2026 at Government Engineering College, Barmer. Featuring 4 activity tracks: Conclave, Plantation, Project Exhibition, and Blood Donation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
