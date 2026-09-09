@@ -34,11 +34,11 @@ export const IMAGEKIT_ACTIVITY_FOLDERS: Record<ActivityTrack, string> = {
 export interface ImageKitConfig {
   urlEndpoint: string;
   publicKey: string;
-  privateKey: string;
 }
 
 /**
- * Retrieve ImageKit configuration from Vite environment variables.
+ * Retrieve ImageKit public configuration from Vite environment variables.
+ * Note: Private key is NEVER loaded on the client side to guarantee total security.
  */
 export const getImageKitConfig = (): ImageKitConfig => {
   const urlEndpoint =
@@ -47,23 +47,19 @@ export const getImageKitConfig = (): ImageKitConfig => {
   const publicKey =
     (import.meta.env.VITE_IMAGEKIT_PUBLIC_KEY as string) ||
     '';
-  const privateKey =
-    (import.meta.env.VITE_IMAGEKIT_PRIVATE_KEY as string) ||
-    '';
 
   return {
     urlEndpoint: urlEndpoint.trim().replace(/\/$/, ''),
     publicKey: publicKey.trim(),
-    privateKey: privateKey.trim(),
   };
 };
 
 /**
- * Check if ImageKit has been configured by the user in .env.
+ * Check if ImageKit has been configured by the user.
  */
 export const isImageKitConfigured = (): boolean => {
   const config = getImageKitConfig();
-  return Boolean(config.urlEndpoint && (config.privateKey || config.publicKey));
+  return Boolean(config.urlEndpoint);
 };
 
 export interface UploadResult {
@@ -142,52 +138,10 @@ export const uploadToImageKit = async (
       console.warn('[ImageKit] Server endpoint not available or returned error, trying client fallback...', serverErr);
     }
 
-    // 4. Client-side Direct Upload Fallback (using ImageKit REST API)
-    const config = getImageKitConfig();
-    if (config.privateKey || config.publicKey) {
-      try {
-        const formData = new FormData();
-        formData.append('file', compressedDataUrl);
-        formData.append('fileName', fileName);
-        formData.append('folder', targetFolder);
-        formData.append('useUniqueFileName', 'true');
-
-        const headers: Record<string, string> = {};
-        if (config.privateKey) {
-          headers['Authorization'] = `Basic ${btoa(config.privateKey + ':')}`;
-        }
-
-        const directRes = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
-          method: 'POST',
-          headers,
-          body: formData,
-        });
-
-        if (directRes.ok) {
-          const directData = await directRes.json();
-          if (directData.url) {
-            console.info(`[ImageKit Client Upload] Success: ${directData.url} in ${targetFolder}`);
-            return {
-              url: directData.url,
-              fileId: directData.fileId,
-              success: true,
-              folder: targetFolder,
-              isImageKit: true,
-            };
-          }
-        } else {
-          const errData = await directRes.json().catch(() => ({}));
-          console.warn('[ImageKit Client Upload] HTTP error:', directRes.status, errData);
-        }
-      } catch (clientUploadErr) {
-        console.warn('[ImageKit Client Upload] Exception:', clientUploadErr);
-      }
-    }
-
-    // 5. Graceful Fallback: If ImageKit keys are not configured yet, return compressed dataUrl
-    // This guarantees user registration NEVER breaks even if credentials are pending!
+    // 4. Graceful Fallback: If server endpoint is unreachable or credentials are pending, return compressed dataUrl
+    // This guarantees user registration NEVER breaks even if network or credentials fail!
     console.warn(
-      `[ImageKit] Credentials pending in .env. To upload to ImageKit folders, add VITE_IMAGEKIT_URL_ENDPOINT and VITE_IMAGEKIT_PRIVATE_KEY in .env. Using fallback preview.`
+      `[ImageKit] Server upload not available or ImageKit credentials pending. Using fallback preview.`
     );
 
     return {
