@@ -543,22 +543,88 @@ export const submitConclaveRegistration = async (
   }
 
   try {
-    const { data, error } = await supabase
-      .from('conclave_registrations')
-      .insert([
-        {
-          attendee_type: payload.attendee_type,
+    const isGuest = payload.attendee_type === 'guest';
+
+    if (isGuest) {
+      // 1. Guest Registration -> conclave_guest_registrations टेबल में जाएगा
+      const guestRow: Record<string, any> = {
+        full_name: payload.full_name,
+        mobile_number: payload.mobile_number,
+        designation: payload.designation,
+        company_name: payload.company_name,
+        guest_category: payload.guest_category,
+        guest_question: payload.guest_question,
+        photo_url: payload.photo_url || '',
+      };
+
+      const { data, error } = await supabase
+        .from('conclave_guest_registrations')
+        .insert([guestRow])
+        .select('id')
+        .single();
+
+      if (!error && data?.id) {
+        return { success: true, id: data.id };
+      }
+
+      // Fallback if photo_url is missing
+      if (error?.message?.includes('photo_url') || error?.code === 'PGRST204') {
+        const fallbackGuest = { ...guestRow };
+        delete fallbackGuest.photo_url;
+        const retryRes = await supabase
+          .from('conclave_guest_registrations')
+          .insert([fallbackGuest])
+          .select('id')
+          .single();
+
+        if (!retryRes.error) {
+          return { success: true, id: retryRes.data?.id };
+        }
+      }
+
+      return { success: false, error: error?.message };
+    } else {
+      // 2. Student Registration -> conclave_registrations टेबल में जाएगा
+      const studentRow: Record<string, any> = {
+        full_name: payload.full_name,
+        mobile_number: payload.mobile_number,
+        branch: payload.branch,
+        semester: payload.semester,
+        guest_question: payload.guest_question,
+        photo_url: payload.photo_url || '',
+      };
+
+      const { data, error } = await supabase
+        .from('conclave_registrations')
+        .insert([studentRow])
+        .select('id')
+        .single();
+
+      if (error) {
+        // Fallback without photo_url if column is missing
+        const fallbackStudent = {
           full_name: payload.full_name,
           mobile_number: payload.mobile_number,
-          photo_url: payload.photo_url || '',
           branch: payload.branch,
           semester: payload.semester,
           guest_question: payload.guest_question,
-          designation: payload.designation,
-          company_name: payload.company_name,
-          guest_category: payload.guest_category,
-        },
-      ])
+        };
+
+        const fallbackRes = await supabase
+          .from('conclave_registrations')
+          .insert([fallbackStudent])
+          .select('id')
+          .single();
+
+        if (!fallbackRes.error) {
+          return { success: true, id: fallbackRes.data?.id };
+        }
+
+        return { success: false, error: error.message };
+      }
+
+      return { success: true, id: data?.id };
+    }
       .select('id')
       .single();
 
@@ -903,13 +969,20 @@ export const fetchAllActivityRegistrations = async () => {
 
   if (supabase && isSupabaseConfigured()) {
     try {
-      const [cRes, pRes, psRes, bRes] = await Promise.allSettled([
+      const [cRes, cgRes, pRes, psRes, bRes] = await Promise.allSettled([
         supabase.from('conclave_registrations').select('*').order('created_at', { ascending: false }),
+        supabase.from('conclave_guest_registrations').select('*').order('created_at', { ascending: false }),
         supabase.from('plantation_registrations').select('*').order('created_at', { ascending: false }),
         supabase.from('project_show_registrations').select('*').order('created_at', { ascending: false }),
         supabase.from('blood_donation_registrations').select('*').order('created_at', { ascending: false }),
       ]);
 
+      if (cRes.status === 'fulfilled' && cRes.value.data) {
+        cloudConclave = [...cloudConclave, ...cRes.value.data.map((r: any) => ({ ...r, attendee_type: 'student' }))];
+      }
+      if (cgRes.status === 'fulfilled' && cgRes.value.data) {
+        cloudConclave = [...cloudConclave, ...cgRes.value.data.map((r: any) => ({ ...r, attendee_type: 'guest' }))];
+      }
       if (cRes.status === 'fulfilled' && cRes.value.data) cloudConclave = cRes.value.data;
       if (pRes.status === 'fulfilled' && pRes.value.data) cloudPlantation = pRes.value.data;
       if (psRes.status === 'fulfilled' && psRes.value.data) cloudProject = psRes.value.data;
